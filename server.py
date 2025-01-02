@@ -5,7 +5,7 @@ import threading
 
 DEFAULT_HOST = '127.0.0.1'
 DEFAULT_PORT = 9999
-MAX_MSG_SIZE = None
+MAX_MSG_SIZE = 0
 
 
 def handle_file_input(file_path: str) -> int:
@@ -41,8 +41,8 @@ def handle_client(client_socket: socket.socket, addr: tuple[str, int]):
     print(f"Connection from {addr} has been established.")
     with client_socket:
         # Send the max message size to the client
-        msg_size = str(MAX_MSG_SIZE).encode()
-        client_socket.sendall(msg_size)
+        msg_max_size = str(MAX_MSG_SIZE).encode()
+        client_socket.sendall(msg_max_size)
 
     pass
 
@@ -52,18 +52,31 @@ def create_server_socket(address: str, port: int):
         try:
             server_socket.bind((address, port))
             server_socket.listen()
+            server_socket.settimeout(12)
             print(f"Server is listening on {address}:{port}")
 
+            threads = []
+
             while True:
+                print("Waiting for a connection...")
                 client_socket, addr = server_socket.accept()
 
                 t = threading.Thread(target=handle_client,
                                      args=(client_socket, addr))
                 t.start()
+                threads.append(t)
 
+        except socket.timeout:
+            print("Error: Connection timed out.")
+            sys.exit(1)
         except OSError as e:
             print(f"Error: {e}")
             sys.exit(1)
+
+        finally:
+            print("Closing server socket...")
+            for t in threads:
+                t.join()
 
     pass
 
@@ -106,6 +119,6 @@ if __name__ == '__main__':
 
     print("Initializing server...")
 
-    # create_server_socket(args.address, args.port)
+    create_server_socket(args.address, args.port)
 
     pass

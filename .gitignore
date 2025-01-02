@@ -1,5 +1,8 @@
+.vscode/
+
 # Ignore bullet_req.txt file
 bullet_req.txt
+test.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
