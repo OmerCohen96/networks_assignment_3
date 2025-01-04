@@ -3,6 +3,7 @@
 # Ignore bullet_req.txt file
 bullet_req.txt
 test.py
+ramblings.txt
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

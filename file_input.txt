@@ -1,4 +1,4 @@
-message:"Hello there! I hope this message finds you well. Today, I wanted to share some thoughts about the fascinating and ever-evolving world we live in. Life is a curious journey, isn’t it? Every day, we encounter countless opportunities to learn, grow, and connect with others. The beauty of human interaction lies in the diversity of perspectives, ideas, and experiences that we bring to the table. It’s truly remarkable how much we can accomplish when we work together with mutual understanding and respect."
-maximum_msg_size:7
-window_size:4 
+message:"Hello there! I hope this message finds you well"
+maximum_msg_size:5
+window_size:2
 timeout:5 

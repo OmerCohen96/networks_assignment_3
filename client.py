@@ -1,12 +1,18 @@
 import sys
 import socket
-import threading
 import time
 import argparse
+from packet import Packet
+from collections import deque
+import threading
 
 DEFAULT_SERVER_HOST = '127.0.0.1'
 DEFAULT_SERVER_PORT = 9999
+# The initial buffer size for receiving server max payload size
 BUFFER_SIZE = 1024
+SLIDING_WINDOW_SIZE = 0
+TIMEOUT = 0
+LAST_ACKNOWLEDGED = -1
 
 
 def handle_file_input(file_path: str) -> tuple[str, int, int]:
@@ -41,7 +47,7 @@ def handle_user_input() -> tuple[str, int, int]:
     sys.exit(1)
 
 
-def start_transmission(server_address: str, server_port: int, message: str, window_size: int, timeout: int):
+def start_transmission(server_address: str, server_port: int, message: str):
     print(f"Connecting to server at {server_address}:{server_port}")
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_socket:
         try:
@@ -59,23 +65,71 @@ def start_transmission(server_address: str, server_port: int, message: str, wind
                       f"The maximum payload size that the server can handle is {max_payload_size}.\n"
                       "Exiting...")
                 sys.exit(1)
+
             print(f"Max payload size: {max_payload_size}")
-        except ConnectionRefusedError:
+
+            # Performs fragmentation on the message if it exceeds
+            # the maximum size and returns the fragments as a bytes array
+            message_fragments = split_message_into_fragments(
+                message, max_payload_size)
+            print(f"Sending {len(message_fragments)} fragments to the server.")
+
+            # Send the message fragments to the server
+            handle_reliable_transmission(client_socket, message_fragments)
+
+        except (ConnectionRefusedError, ConnectionAbortedError):
             print("Error: Connection was refused by the server.")
             sys.exit(1)
         except ValueError:
             print("Error: Could not convert data to an integer.")
             sys.exit(1)
 
-        # Implement the RDT protocol here
 
-        # Performs fragmentation on the message if it exceeds
-        # the maximum size and returns the fragments as a bytes array
-        message_fragments = split_message_into_fragments(
-            message, max_payload_size)
-        print(f"Sending {len(message_fragments)} fragments to the server.")
-        print(f"Message fragments: \n{message_fragments}")
+def handle_acknowledgement(client_socket: socket.socket, last_ack: int):
+    global LAST_ACKNOWLEDGED
+    while True:
+        try:
+            ack = int(client_socket.recv(BUFFER_SIZE).decode())
+            if ack == last_ack:
+                break
+            LAST_ACKNOWLEDGED = ack
+        except ValueError:
+            print("Error: Could not convert data to an integer.")
+            sys.exit(1)
 
+
+def handle_reliable_transmission(client_socket: socket.socket, message_fragments: list[bytes]):
+
+    thread = threading.Thread(target=handle_acknowledgement,
+                              args=(client_socket, len(message_fragments) - 1))
+    thread.start()
+
+    window = deque(maxlen=SLIDING_WINDOW_SIZE)
+
+    for seq, fragment in enumerate(message_fragments):
+        if len(window) < SLIDING_WINDOW_SIZE:
+            # Create the packet
+            packet = Packet(seq, data=fragment)
+            # Insert the packet into the window
+            window.append(packet)
+            # Send the packet to the server
+            client_socket.sendall(packet.pack())
+
+        else:
+            # Wait for the acknowledgment
+            while LAST_ACKNOWLEDGED < window[0].seq_num:
+                if time.time() - window[0].timestamp > TIMEOUT:
+                    # Resend all packets in the window
+                    rotates = len(window)
+                    for _ in range(rotates):
+                        packet = window.popleft()
+                        new_packet = Packet(packet.seq_num, data=packet.data)
+                        window.append(new_packet)
+                        client_socket.sendall(new_packet.pack())
+            while window and LAST_ACKNOWLEDGED < window[0].seq_num:
+                window.popleft()
+
+    thread.join()
     pass
 
 
@@ -117,9 +171,18 @@ if "__main__" == __name__:
     else:
         message, window_size, timeout = handle_user_input()
 
-    print(
-        f"Message: {message}, Window Size: {window_size}, Timeout: {timeout}")
+    # print(
+    #     f"Message: {message}, Window Size: {window_size}, Timeout: {timeout}")
 
-    start_transmission(args.address, args.port, message, window_size, timeout)
+    # Check if the window size and timeout are valid
+    # window size and timeout must be greater than 0
+    # the desired behavior for invalid values is not specified
+    if window_size < 1 or timeout < 1:
+        print("Error: Window size and timeout must be greater than 0.")
+        print("Exiting...")
+        sys.exit(1)
 
-    pass
+    SLIDING_WINDOW_SIZE = window_size
+    TIMEOUT = timeout
+
+    start_transmission(args.address, args.port, message)
