@@ -1,4 +1,4 @@
-message:"Hello there! I hope this message finds you well"
+message:"This is a very long prompt"
 maximum_msg_size:5
-window_size:2
-timeout:5 
+window_size:5
+timeout:2
