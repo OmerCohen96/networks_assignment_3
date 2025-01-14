@@ -12,9 +12,12 @@ DEFAULT_SERVER_PORT = 9999
 BUFFER_SIZE = 1024
 SLIDING_WINDOW_SIZE = 0
 TIMEOUT = 0
+MAX_PAYLOAD_SIZE = 0
 # The last acknowledged packet by the server
 # Start with -1 to indicate that no packets have been acknowledged yet
 LAST_ACKNOWLEDGED = -1
+# A lock mechanism to lock the access to the LAST_ACKNOWLEDGED variable to 1 thread at a time
+ack_lock = threading.Lock()
 
 
 def handle_acknowledgement(connection_socket: socket.socket, last_ack: int) -> None:
@@ -34,13 +37,17 @@ def handle_acknowledgement(connection_socket: socket.socket, last_ack: int) -> N
         try:
             # Check if the LAST_ACKNOWLEDGED is equal to the last_ack
             # If so, all packets have been acknowledged
-            if LAST_ACKNOWLEDGED == last_ack:
-                print("All packets have been acknowledged.")
+            with ack_lock:
+                if LAST_ACKNOWLEDGED == last_ack:
+                    print("All packets have been acknowledged.")
+                    print("Sending final acknowledgment to the server...")
 
-                # Send a packet that indicates the last packet has been acknowledged
-                connection_socket.sendall(
-                    Packet(last_ack, ack_msg=True).pack())
-                break
+                    # Send a packet that indicates the last packet has been acknowledged
+                    packet = Packet(
+                        last_ack + 1, ack_msg=True, data=b' '*MAX_PAYLOAD_SIZE).pack()
+                    connection_socket.sendall(packet)
+
+                    break
 
             # Receive the acknowledgments from the server
             packet_data = connection_socket.recv(Packet.HEADER_SIZE)
@@ -53,8 +60,9 @@ def handle_acknowledgement(connection_socket: socket.socket, last_ack: int) -> N
             print(f"ack: {ack_number} received")
 
             # Update the LAST_ACKNOWLEDGED just if the ack_number is greater than the current value
-            if ack_number > LAST_ACKNOWLEDGED:
-                LAST_ACKNOWLEDGED = ack_number
+            with ack_lock:
+                if ack_number > LAST_ACKNOWLEDGED:
+                    LAST_ACKNOWLEDGED = ack_number
         except ValueError:
             print("Error: Could not convert data to an integer.")
             sys.exit(1)
@@ -66,88 +74,114 @@ def handle_acknowledgement(connection_socket: socket.socket, last_ack: int) -> N
             sys.exit(1)
 
 
-def handle_reliable_transmission(client_socket: socket.socket, message_fragments: list[bytes]):
-    with client_socket:
+def handle_reliable_transmission(sock: socket.socket, message_fragments: list[bytes]) -> None:
 
-        # Initialize the sliding window
-        window = deque(maxlen=SLIDING_WINDOW_SIZE)
+    # Initialize the sliding window
+    window = deque(maxlen=SLIDING_WINDOW_SIZE)
 
-        # Initialize the last acknowledged packet by the server
-        last_acked_packet = -1
-        last_sequence_number = len(message_fragments) - 1
+    # Initialize the last acknowledged packet by the server
+    curr_ack = -1
+    final_seq = len(message_fragments) - 1
 
-        # Start the acknowledgment handler thread
-        ack_thread = threading.Thread(
-            target=handle_acknowledgement, args=(client_socket, last_sequence_number))
-        ack_thread.start()
+    # Start the acknowledgment handler thread
+    ack_thread = threading.Thread(
+        target=handle_acknowledgement, args=(sock, final_seq))
+    ack_thread.start()
 
-        # loop until all packets have been acknowledged
-        while last_acked_packet < last_sequence_number:
+    # loop until all packets have been acknowledged
+    while curr_ack < final_seq:
 
-            print(
-                f"current Packet details in the window {[(x.seq_num , x.data) for x in window]}")
+        # Update the current acknowledgment number in each iteration
+        with ack_lock:
+            curr_ack = LAST_ACKNOWLEDGED
 
-            if window and window[-1].seq_num <= last_sequence_number:
-                last_acked_packet = LAST_ACKNOWLEDGED
+        # If the window is not full, we do the following:
+        if len(window) < SLIDING_WINDOW_SIZE:
 
-                while len(window) < SLIDING_WINDOW_SIZE and window[-1].seq_num < last_sequence_number:
-                    print("stack here 688", LAST_ACKNOWLEDGED)
-                    packet = send_packet(
-                        window[-1].seq_num + 1, message_fragments[window[-1].seq_num + 1], client_socket)
-                    window.append(packet)
+            # Empty the window from the packets that have been acknowledged
+            while window and window[0].seq_num <= curr_ack:
+                window.popleft()
 
-                while window and window[0].seq_num <= last_acked_packet:
-                    print("stack here 63", LAST_ACKNOWLEDGED)
+            with ack_lock:
+                curr_ack = LAST_ACKNOWLEDGED
+
+            # Check what is the next packet that should be sent
+            if window:
+                # if the window is not empty, the next packet from the last in the window should be sent
+                last_seq = window[-1].seq_num + 1
+            else:
+                # Else, the next packet should be sent is the next packet after the last acknowledged packet
+                last_seq = curr_ack + 1
+
+            # Calculate the number of the new packets that should be sent
+            remain = min(SLIDING_WINDOW_SIZE - len(window),
+                         final_seq - last_seq + 1)
+
+            # Send the new packets
+            for seq in range(last_seq, last_seq + remain):
+                window.append(send_packet(seq, message_fragments[seq], sock))
+
+            with ack_lock:
+                curr_ack = LAST_ACKNOWLEDGED
+
+            # Again, update the window from the packets that have been acknowledged
+            if window:
+                while window and window[0].seq_num <= curr_ack:
                     window.popleft()
 
-                if not window:
-                    continue
-                elif len(window) == SLIDING_WINDOW_SIZE or window[-1].seq_num > last_acked_packet:
-                    print("stack here 69", LAST_ACKNOWLEDGED)
-                    time.sleep(2)
-                    print(f"Timeout = {time.time() - window[0].timestamp}")
-                    if time.time() - window[0].timestamp > TIMEOUT:
-                        print(f"Timeout: Resending all packets in the window")
-                        window_current_size = len(window)
-                        for i in range(window_current_size):
-                            print(f"Resending packet {window[0].seq_num}")
-                            re_send_packet = window.popleft()
-                            window.append(send_packet(
-                                re_send_packet.seq_num, re_send_packet.data, client_socket))
-                else:
-                    next_seq = window[-1].seq_num + 1
-                    print("stack here 89", LAST_ACKNOWLEDGED)
-                    while len(window) < SLIDING_WINDOW_SIZE and next_seq < last_sequence_number:
-                        print("stack here 80")
-                        packet = send_packet(
-                            next_seq, message_fragments[next_seq], client_socket)
-                        window.append(packet)
-                        next_seq += 1
+            with ack_lock:
+                curr_ack = LAST_ACKNOWLEDGED
 
-            elif not window:
-                last_acked_packet = LAST_ACKNOWLEDGED
-                i = last_acked_packet
-                while i < last_sequence_number and len(window) < SLIDING_WINDOW_SIZE:
-                    print("stack here 91")
-                    i += 1
-                    packet = send_packet(
-                        i, message_fragments[i], client_socket)
-                    window.append(packet)
-            print("stack here 103", LAST_ACKNOWLEDGED)
+        # If the window is full, we do the following:
+        else:
+            with ack_lock:
+                curr_ack = LAST_ACKNOWLEDGED
 
-            time.sleep(0.0001)
-            last_acked_packet = LAST_ACKNOWLEDGED
+            # Update the window from the packets that have been acknowledged
+            while window and window[0].seq_num <= curr_ack:
+                window.popleft()
 
-        ack_thread.join()
+        # Check for timeout and resend the packets if necessary
+        check_timeout(window, sock)
+        time.sleep(0.01)
 
+    # Wait for the acknowledgment thread to finish
+    time.sleep(1)
+    ack_thread.join()
+
+    # If we've reached this point, all packets have been acknowledged
     print("All fragments sent.")
+
+
+def check_timeout(window: deque, sock: socket.socket) -> None:
+    """
+    Checks the timeout of the packets in the window and resends the packets if necessary.
+
+    This function iterates over the packets in the window and checks if the timeout has
+    expired for any of them. If the timeout has expired, the packet is resent to the server.
+
+    """
+    if window and (time.time() - window[0].timestamp) > TIMEOUT:
+        # To show the window if timeout occurs
+        print(f"Window = {[packet.seq_num for packet in window]}")
+        print("Timeout occurred. Resending packets...")
+        # Send all the packets in the window again
+        for _ in range(len(window)):
+            old_packet = window.popleft()
+            print(f"send packet {old_packet.seq_num} again...")
+            new_packet = send_packet(
+                old_packet.seq_num, old_packet.data, sock)
+            # Append the same packet with the new timestamp
+            window.append(new_packet)
 
 
 def initiate_connection(server_address: str, server_port: int, message: str) -> None:
 
     print(f"Connecting to server at {server_address}:{server_port}")
 
-    # Create a socket object
+    global MAX_PAYLOAD_SIZE
+
+    # Create a TCP socket object
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as connection_socket:
         try:
             # Connect to the server
@@ -175,6 +209,8 @@ def initiate_connection(server_address: str, server_port: int, message: str) -> 
                       "Exiting...")
                 return
 
+            MAX_PAYLOAD_SIZE = max_payload_size
+
         except (ConnectionRefusedError, ConnectionAbortedError):
             print("Error: Connection was refused by the server.")
             return
@@ -192,6 +228,8 @@ def initiate_connection(server_address: str, server_port: int, message: str) -> 
             message, max_payload_size)
 
         print(f"Sending {len(message_fragments)} fragments to the server.")
+
+        input("Press Enter to start the transmission...")
 
         # Initiate and start the reliable transmission of the message fragments
         handle_reliable_transmission(connection_socket, message_fragments)
@@ -219,6 +257,11 @@ def split_message_into_fragments(message: str, max_payload_size: int) -> list[by
     # Split the message into fragments which are less than or equal to the max payload size
     fragments = [msg_bytes[i:i + max_payload_size]
                  for i in range(0, msg_bytes_len, max_payload_size)]
+
+    if len(fragments[-1]) < max_payload_size:
+        # Padding the last fragment with spaces to make it equal to the max payload size
+        fragments[-1] += b' ' * (max_payload_size - len(fragments[-1]))
+
     return fragments
 
 
@@ -309,7 +352,7 @@ timeout:5
     SLIDING_WINDOW_SIZE = window_size
     TIMEOUT = timeout
 
-    print(f"Message content for sending: {message}")
+    print(f"Message length: {len(message)}")
 
     print("Starting the connection...")
 

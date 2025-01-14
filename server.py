@@ -94,6 +94,15 @@ def handle_client(client_socket: socket.socket, addr: tuple[str, int]):
                 # Unpack the received data
                 packet = Packet.unpack(data)
 
+                # If in the recievd packet the ack_msg flag is set, its means that the client
+                # Received acknowledgment for the last packet in the sequence
+                # and the server should stop receiving packets
+                # So, break the loop and close the connection
+                if packet.ack_msg == True and packet.seq_num == len(packets):
+                    print("Last packet received.")
+                    time.sleep(2)
+                    break
+
                 # This function handles the acknowledgment of the received packets
                 # and returns the last acknowledged packet number
                 # Also, it organizes the received packets in the correct order in the packets list
@@ -102,18 +111,13 @@ def handle_client(client_socket: socket.socket, addr: tuple[str, int]):
 
                 # Send the correct acknowledgment number back to the client
                 if ack_number >= 0:
+                    # if ack_number > 150 and ack_number % 50 == 0: ---> for worst case scenario testing
+                    #     input("Press Enter to continue...")
                     ack_packet = Packet(ack_number, ack_msg=True)
                     client_socket.sendall(ack_packet.pack())
-                    print(f"Acknowledgment sent for packet {ack_number}")
+                    print(
+                        f"Acknowledgment sent for sequence number: {ack_number}")
 
-                # If in the recievd packet the ack_msg flag is set, its means that the client
-                # Received acknowledgment for the last packet in the sequence
-                # and the server should stop receiving packets
-                # So, break the loop and close the connection
-                if packet.ack_msg == True:
-                    print("Last packet received.")
-                    time.sleep(1)
-                    break
             except socket.error as e:
                 print(f"Error occurred with the socket in handle_client: {e}")
                 break
@@ -121,13 +125,16 @@ def handle_client(client_socket: socket.socket, addr: tuple[str, int]):
                 print(f"Error occurred in handle_client: {e}")
                 break
 
-        # after the loop ends, check if there are any missing packets
+        # After the loop ends, check if there are any missing packets
         if not packets or None in packets:
             print("Error: Some packets are missing.")
 
         # Combine the packets data and gather the complete message
-        message_bytes = b''.join(list(map(lambda x: x.data, packets)))
+        message_bytes = b''.join(
+            list(map(lambda x: x.data, packets))).strip(b' ')
         message = message_bytes.decode()
+
+        # Print the received message
         print(f"Message received: {message}")
 
         print(f"Closing connection with {addr}...")
@@ -135,7 +142,7 @@ def handle_client(client_socket: socket.socket, addr: tuple[str, int]):
 
 def initialize_server_socket(address: str, port: int):
 
-    # Create a server socket
+    # Create TCP socket for the server
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
         try:
             # Bind the server socket to the address and port
@@ -143,8 +150,8 @@ def initialize_server_socket(address: str, port: int):
             server_socket.listen()
             print(f"Server is listening on {address}:{port}")
 
-            # # Set timeout for the server socket
-            server_socket.settimeout(35)
+            # # # Set timeout for the server socket
+            # server_socket.settimeout(75)
 
             threads = []
 
